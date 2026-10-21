@@ -1,5 +1,7 @@
 package dev.xantha.vss.networking.server.preload;
 
+import dev.xantha.vss.networking.server.runtime.ServerLifecycleGuard;
+import dev.xantha.vss.networking.server.sending.ColumnDeliveryService;
 
 import dev.xantha.vss.networking.server.dirty.DirtyColumnBroadcaster;
 import dev.xantha.vss.networking.server.generation.ChunkGenerationService;
@@ -8,7 +10,6 @@ import dev.xantha.vss.networking.server.state.PlayerRequestRegistry;
 import dev.xantha.vss.networking.server.state.PlayerRequestState;
 import dev.xantha.vss.networking.server.storage.ColumnLodCache;
 import dev.xantha.vss.networking.server.storage.PersistentColumnLodStore;
-import dev.xantha.vss.networking.server.VSSServerNetworking;
 import dev.xantha.vss.common.VSSLogger;
 import dev.xantha.vss.common.processing.EncodedColumnData;
 import dev.xantha.vss.config.VSSServerConfig;
@@ -20,7 +21,14 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 
+/**
+ * 扫描已有缓存区域，按玩家预加载前沿补齐缺失列，不建立第二套玩家会话。
+ * <p>服务端线程管理前沿和队列；磁盘读取交给共享运行时，完成后回服务端线程
+ * 复核 epoch、玩家状态身份与当前维度，再由交付服务统一准入。严格顺序客户端自行拉取。
+ */
 public final class ExistingColumnPreloader {
+    private final ServerLifecycleGuard lifecycle;
+    private final ColumnDeliveryService delivery;
     private static final int PRELOAD_COLUMNS_PER_REGION = 1024;
     private static final int PRELOAD_COLUMN_QUEUE_RESUME_THRESHOLD = 2048;
     private static final int PRELOAD_FRONTIER_RING_SLACK = 8;
@@ -38,7 +46,11 @@ public final class ExistingColumnPreloader {
             PersistentColumnLodStore persistentStore,
             ChunkGenerationService generationService,
             ColumnLodCache columnCache,
-            DiskTaskRuntime diskRuntime) {
+            DiskTaskRuntime diskRuntime,
+            ServerLifecycleGuard lifecycle,
+            ColumnDeliveryService delivery) {
+        this.lifecycle = java.util.Objects.requireNonNull(lifecycle, "lifecycle");
+        this.delivery = java.util.Objects.requireNonNull(delivery, "delivery");
         this.playerRegistry = playerRegistry;
         this.persistentStore = persistentStore;
         this.generationService = generationService;
@@ -50,7 +62,7 @@ public final class ExistingColumnPreloader {
         // Strict clients pull only the next incomplete ring. Unsolicited cache
         // replay bypasses that order and wastes disk/bandwidth on hidden columns.
         if (state.requiresStrictLodOrder()) return;
-        if (VSSServerNetworking.isServerStopping() || !persistentStore.enabled()) {
+        if (lifecycle.isStopping() || !persistentStore.enabled()) {
             return;
         }
         int regionSize = PersistentColumnLodStore.regionSize();
@@ -64,7 +76,7 @@ public final class ExistingColumnPreloader {
     }
 
     public void scanRegions(MinecraftServer server) {
-        if (VSSServerNetworking.isServerStopping() || !persistentStore.enabled()) {
+        if (lifecycle.isStopping() || !persistentStore.enabled()) {
             return;
         }
         for (Map.Entry<UUID, PlayerRequestState> entry : playerRegistry.entries()) {
@@ -94,7 +106,7 @@ public final class ExistingColumnPreloader {
     }
 
     public void flushColumns(MinecraftServer server) {
-        if (VSSServerNetworking.isServerStopping() || !persistentStore.enabled()) {
+        if (lifecycle.isStopping() || !persistentStore.enabled()) {
             return;
         }
         boolean submittedAny;
@@ -130,7 +142,7 @@ public final class ExistingColumnPreloader {
         UUID playerId = player.getUUID();
         MinecraftServer server = player.server;
         ServerLevel level = player.serverLevel();
-        long lifecycleEpoch = VSSServerNetworking.lifecycleEpoch();
+        long lifecycleEpoch = lifecycle.currentEpoch();
         int centerCx = player.getBlockX() >> 4;
         int centerCz = player.getBlockZ() >> 4;
         int minDistance = 0;
@@ -140,7 +152,7 @@ public final class ExistingColumnPreloader {
         diskRuntime.submitPreloadRead(preloadReadLimit(), manualReadReserve(), () -> {
             ArrayList<PersistentColumnLodStore.ExistingColumn> columns = new ArrayList<>();
             try {
-                if (!VSSServerNetworking.isLifecycleStale(lifecycleEpoch)) {
+                if (!lifecycle.isStale(lifecycleEpoch)) {
                     columns = persistentStore.findExistingColumnsInRegion(
                             server,
                             level.dimension(),
@@ -155,7 +167,7 @@ public final class ExistingColumnPreloader {
             } catch (Exception e) {
                 VSSLogger.debug("Existing LOD preload region scan failed: " + e.getMessage());
             }
-            if (VSSServerNetworking.isLifecycleStale(lifecycleEpoch)) {
+            if (lifecycle.isStale(lifecycleEpoch)) {
                 state.finishPreloadRegionScan(regionMinimumDistance);
                 return;
             }
@@ -163,7 +175,7 @@ public final class ExistingColumnPreloader {
             try {
                 server.execute(() -> {
                     try {
-                        if (VSSServerNetworking.isLifecycleStale(lifecycleEpoch) || !playerRegistry.isCurrent(playerId, state)) {
+                        if (lifecycle.isStale(lifecycleEpoch) || !playerRegistry.isCurrent(playerId, state)) {
                             return;
                         }
                         ServerPlayer onlinePlayer = server.getPlayerList().getPlayer(playerId);
@@ -206,7 +218,7 @@ public final class ExistingColumnPreloader {
             if (preload == null) {
                 return false;
             }
-            if (!VSSServerNetworking.isColumnStillRelevant(player, player.serverLevel().dimension(), preload.chunkX(), preload.chunkZ())) {
+            if (!delivery.isColumnStillRelevant(player, player.serverLevel().dimension(), preload.chunkX(), preload.chunkZ())) {
                 continue;
             }
             long requiredTimestamp = Math.max(
@@ -222,13 +234,13 @@ public final class ExistingColumnPreloader {
     }
 
     private void submitRead(ServerPlayer player, PlayerRequestState state, PlayerRequestState.PreloadColumn preload) {
-        if (VSSServerNetworking.isServerStopping()) {
+        if (lifecycle.isStopping()) {
             return;
         }
         UUID playerId = player.getUUID();
         ServerLevel level = player.serverLevel();
         MinecraftServer server = player.server;
-        long lifecycleEpoch = VSSServerNetworking.lifecycleEpoch();
+        long lifecycleEpoch = lifecycle.currentEpoch();
         state.beginPreloadColumnRead();
         diskRuntime.submitCoalescedRead(
                 new DiskTaskRuntime.ReadKey(level.dimension().location(), preload.chunkX(), preload.chunkZ()),
@@ -236,13 +248,13 @@ public final class ExistingColumnPreloader {
                 preloadReadLimit(),
                 manualReadReserve(),
                 () -> {
-                    if (VSSServerNetworking.isLifecycleStale(lifecycleEpoch)) {
+                    if (lifecycle.isStale(lifecycleEpoch)) {
                         return null;
                     }
                     long requiredTimestamp = DirtyColumnBroadcaster.latestDirtyTimestamp(
                             level.dimension(), preload.chunkX(), preload.chunkZ());
                     var cached = columnCache.peek(level.dimension(), preload.chunkX(), preload.chunkZ());
-                    if (cached != null && cached.completeColumn() && cached.timestamp() >= requiredTimestamp) {
+                    if (cached != null && cached.isDeliverable() && cached.timestamp() >= requiredTimestamp) {
                         return new PersistentColumnLodStore.Entry(cached.columnData());
                     }
                     return persistentStore.read(
@@ -253,8 +265,8 @@ public final class ExistingColumnPreloader {
                             requiredTimestamp);
                 },
                 storedData -> {
-                    if (storedData == null || storedData.columnData() == null || !storedData.columnData().completeColumn()
-                            || VSSServerNetworking.isLifecycleStale(lifecycleEpoch)) {
+                    if (storedData == null || storedData.columnData() == null || !storedData.columnData().isDeliverable()
+                            || lifecycle.isStale(lifecycleEpoch)) {
                         state.finishPreloadColumnRead();
                         return;
                     }
@@ -262,7 +274,7 @@ public final class ExistingColumnPreloader {
                     try {
                 server.execute(() -> {
                     try {
-                        if (VSSServerNetworking.isLifecycleStale(lifecycleEpoch) || !playerRegistry.isCurrent(playerId, state)) {
+                        if (lifecycle.isStale(lifecycleEpoch) || !playerRegistry.isCurrent(playerId, state)) {
                             return;
                         }
                         ServerPlayer onlinePlayer = server.getPlayerList().getPlayer(playerId);
@@ -272,7 +284,7 @@ public final class ExistingColumnPreloader {
                         if (generationService.isGenerating(level.dimension(), columnData.chunkX(), columnData.chunkZ())) {
                             return;
                         }
-                        if (!VSSServerNetworking.isColumnStillRelevant(onlinePlayer, level.dimension(), columnData.chunkX(), columnData.chunkZ())) {
+                        if (!delivery.isColumnStillRelevant(onlinePlayer, level.dimension(), columnData.chunkX(), columnData.chunkZ())) {
                             return;
                         }
                         long requiredTimestamp = Math.max(

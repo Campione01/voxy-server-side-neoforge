@@ -50,5 +50,7 @@ public final class WorldgenProfileHolder {
     public static synchronized void clear() {
         owner = null;
         payloads.clear();
+        StructureTemplateService.clear();
+        WorldgenTemplateCatalog.clear();
     }
 }

@@ -2,6 +2,7 @@ package dev.xantha.vss.networking.payloads;
 
 import dev.xantha.vss.common.VSSConstants;
 import dev.xantha.vss.common.processing.EncodedColumnData;
+import dev.xantha.vss.common.processing.ColumnCoverage;
 import dev.xantha.vss.common.processing.LodByteCompression;
 import dev.xantha.vss.config.VSSServerConfig;
 import java.io.IOException;
@@ -41,6 +42,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
     private final int[] encodedSectionYs;
     private final int[] encodedSectionLengths;
     private final boolean completeColumn;
+    private final ColumnCoverage coverage;
     private final int[] replacementSectionYs;
     private boolean allowZstdEncoding;
     private volatile boolean hasCachedEncodedForClient;
@@ -93,6 +95,13 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
             int partIndex,
             int partCount,
             int[] replacementSectionYs) {
+        this(requestId, chunkX, chunkZ, dimension, columnTimestamp, sectionBytes, completeColumn,
+                transferId, partIndex, partCount, replacementSectionYs, ColumnCoverage.FULL);
+    }
+
+    public VoxelColumnS2CPayload(int requestId, int chunkX, int chunkZ, ResourceKey<Level> dimension,
+            long columnTimestamp, byte[] sectionBytes, boolean completeColumn, long transferId,
+            int partIndex, int partCount, int[] replacementSectionYs, ColumnCoverage coverage) {
         validateTransferMetadata(transferId, partIndex, partCount);
         this.requestId = requestId;
         this.transferId = transferId;
@@ -109,6 +118,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
         this.encodedSectionYs = new int[0];
         this.encodedSectionLengths = new int[0];
         this.completeColumn = completeColumn;
+        this.coverage = validateCoverage(completeColumn, coverage);
         this.replacementSectionYs = sanitizeReplacementSections(replacementSectionYs);
     }
 
@@ -120,7 +130,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
                 0L,
                 0,
                 1,
-                columnData.completeColumn() ? columnData.sectionYs() : new int[0]);
+                columnData.isDeliverable() ? columnData.sectionYs() : new int[0]);
     }
 
     @Deprecated
@@ -157,8 +167,9 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
         this.encodedSectionYs = columnData.sectionYs();
         this.encodedSectionLengths = columnData.sectionLengths();
         this.completeColumn = columnData.completeColumn();
+        this.coverage = columnData.coverage();
         int[] effectiveReplacementSectionYs = replacementSectionYs;
-        if (completeColumn
+        if ((completeColumn || coverage.isFiltered())
                 && (effectiveReplacementSectionYs == null || effectiveReplacementSectionYs.length == 0)) {
             effectiveReplacementSectionYs = columnData.sectionYs();
         }
@@ -207,7 +218,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
                 partCount,
                 replacementSectionYs,
                 new int[0],
-                new int[0]);
+                new int[0], ColumnCoverage.FULL);
     }
 
     private VoxelColumnS2CPayload(
@@ -225,7 +236,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
             int partCount,
             int[] replacementSectionYs,
             int[] encodedSectionYs,
-            int[] encodedSectionLengths) {
+            int[] encodedSectionLengths, ColumnCoverage coverage) {
         validateTransferMetadata(transferId, partIndex, partCount);
         this.requestId = requestId;
         this.transferId = transferId;
@@ -242,6 +253,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
         this.encodedSectionYs = sanitizeReplacementSections(encodedSectionYs);
         this.encodedSectionLengths = sanitizeSectionLengths(this.encodedSectionYs, encodedSectionLengths);
         this.completeColumn = completeColumn;
+        this.coverage = validateCoverage(completeColumn, coverage);
         this.replacementSectionYs = sanitizeReplacementSections(replacementSectionYs);
     }
 
@@ -294,6 +306,16 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
         return completeColumn;
     }
 
+    public ColumnCoverage coverage() { return coverage; }
+
+    public boolean isDeliverable() { return completeColumn || coverage.isFiltered(); }
+
+    private static ColumnCoverage validateCoverage(boolean complete, ColumnCoverage coverage) {
+        if (coverage == null || complete && coverage.isFiltered())
+            throw new IllegalArgumentException("Invalid column coverage metadata");
+        return coverage;
+    }
+
     public boolean completesRequest() {
         return partIndex == partCount - 1;
     }
@@ -307,8 +329,9 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
             int partIndex,
             int partCount,
             int[] replacementSectionYs) {
+        VoxelColumnS2CPayload result;
         if (sectionBytes != null) {
-            return new VoxelColumnS2CPayload(
+            result = new VoxelColumnS2CPayload(
                     requestId,
                     chunkX,
                     chunkZ,
@@ -319,24 +342,27 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
                     transferId,
                     partIndex,
                     partCount,
-                    replacementSectionYs);
+                    replacementSectionYs, coverage);
+        } else {
+            result = new VoxelColumnS2CPayload(
+                    requestId,
+                    chunkX,
+                    chunkZ,
+                    dimension,
+                    columnTimestamp,
+                    encodedSectionBytes,
+                    encodedCompression,
+                    encodedRawSize,
+                    completeColumn,
+                    transferId,
+                    partIndex,
+                    partCount,
+                    replacementSectionYs,
+                    encodedSectionYs,
+                    encodedSectionLengths, coverage);
         }
-        return new VoxelColumnS2CPayload(
-                requestId,
-                chunkX,
-                chunkZ,
-                dimension,
-                columnTimestamp,
-                encodedSectionBytes,
-                encodedCompression,
-                encodedRawSize,
-                completeColumn,
-                transferId,
-                partIndex,
-                partCount,
-                replacementSectionYs,
-                encodedSectionYs,
-                encodedSectionLengths);
+        result.setAllowZstdEncoding(allowZstdEncoding);
+        return result;
     }
 
     public int[] replacementSectionYs() {
@@ -420,6 +446,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
         }
         buf.writeLong(payload.columnTimestamp);
         buf.writeBoolean(payload.completeColumn);
+        buf.writeUtf(payload.coverage.filterKey(), 64);
         buf.writeVarInt(payload.replacementSectionYs.length);
         for (int sectionY : payload.replacementSectionYs) {
             buf.writeByte(sectionY);
@@ -450,6 +477,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
         };
         long timestamp = buf.readLong();
         boolean completeColumn = buf.readBoolean();
+        ColumnCoverage coverage = new ColumnCoverage(buf.readUtf(64));
         int replacementCount = buf.readVarInt();
         if (replacementCount < 0 || replacementCount > MAX_REPLACEMENT_SECTION_COUNT) {
             throw new IllegalArgumentException("Invalid LOD replacement section count: " + replacementCount);
@@ -475,7 +503,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
                 transferId,
                 partIndex,
                 partCount,
-                replacementSectionYs);
+                replacementSectionYs, new int[0], new int[0], coverage);
     }
 
     private static LodByteCompression.Result encodedForClient(VoxelColumnS2CPayload payload, boolean networkCompressionEnabled) {
@@ -551,7 +579,7 @@ public final class VoxelColumnS2CPayload implements CustomPacketPayload {
     }
 
     private int metadataBytes() {
-        return 18 + replacementSectionYs.length;
+        return 19 + coverage.filterKey().length() + replacementSectionYs.length;
     }
 
     private static void validateTransferMetadata(long transferId, int partIndex, int partCount) {

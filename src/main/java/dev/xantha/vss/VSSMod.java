@@ -21,6 +21,8 @@ public final class VSSMod {
     private static final String CLIENT_BOOTSTRAP_CLASS = "dev.xantha.vss.client.VSSClientBootstrap";
 
     public VSSMod(IEventBus modBus, ModContainer modContainer) {
+        VSSLogger.configureDebug(() -> dev.xantha.vss.config.VSSClientConfig.CONFIG.debugLogging
+                || dev.xantha.vss.config.VSSServerConfig.CONFIG.debugLogging);
         modBus.addListener(RegisterPayloadHandlersEvent.class, VSSNetworking::register);
         modBus.addListener(RegisterConfigurationTasksEvent.class, VSSNetworking::registerConfigurationTasks);
         NeoForge.EVENT_BUS.register(VSSServerNetworking.class);

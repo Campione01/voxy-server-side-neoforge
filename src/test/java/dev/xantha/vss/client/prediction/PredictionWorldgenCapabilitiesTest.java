@@ -5,6 +5,17 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PredictionWorldgenCapabilitiesTest {
+    @Test void sourceAndJavaOnlyPlansCannotAccidentallyUseTheRustGraph() {
+        var root = JsonParser.parseString("{\"settings\":{},\"biome_source\":{\"type\":\"minecraft:fixed\"}}").getAsJsonObject();
+        var plan = dev.xantha.vss.common.worldgen.TerrainPredictionPlan.noise("example:java_context", 1, false);
+        root.add(dev.xantha.vss.common.worldgen.TerrainPredictionPlan.FIELD, plan.encode());
+        assertNull(PredictionWorldgenCapabilities.rejection(root));
+        assertTrue(PredictionWorldgenCapabilities.nativeTerrainRejection(root, new com.google.gson.JsonObject()).contains("original Java"));
+        root.add(dev.xantha.vss.common.worldgen.TerrainPredictionPlan.FIELD,
+                dev.xantha.vss.common.worldgen.TerrainPredictionPlan.unavailable("needs neighbor state").encode());
+        assertEquals("needs neighbor state", PredictionWorldgenCapabilities.rejection(root));
+    }
+
     @Test void blueprintCodecCannotSilentlyDiscardMissingRoutingSnapshot() {
         var generator = JsonParser.parseString("""
                 {"settings":{},"biome_source":{"type":"blueprint:modded","original_biome_source":{}}}

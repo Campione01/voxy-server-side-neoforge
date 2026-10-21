@@ -30,6 +30,17 @@ class PredictionUploadHandoffTest {
         assertFalse(budget.allows(1), "byte budget must still stop the burst");
     }
 
+    @Test void existingGpuParentDefersFineUploadButMissingRegionDoesNot() {
+        var state = new PredictionRenderResidency();
+        var parent = PredictionLodSeamsTest.tile(0, 0, 2, 64);
+        var source = source(Map.of(parent.key(), parent));
+        state.retain(source);
+        assertFalse(state.hasResidentCover(new PredictionTileKey(Level.OVERWORLD, 0, 0, 0), LAYOUT));
+        state.uploaded(parent);
+        assertTrue(state.hasResidentCover(new PredictionTileKey(Level.OVERWORLD, 0, 0, 0), LAYOUT));
+        assertFalse(state.hasResidentCover(new PredictionTileKey(Level.OVERWORLD, 2, 0, 0), LAYOUT));
+    }
+
     @Test void uploadCandidatesDrainAndRefreshForReplacementAndReset() {
         var state = new PredictionRenderResidency();
         var a = PredictionLodSeamsTest.tile(0, 0, 2, 64);

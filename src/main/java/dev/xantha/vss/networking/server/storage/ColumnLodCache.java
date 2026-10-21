@@ -1,6 +1,8 @@
 package dev.xantha.vss.networking.server.storage;
 
 import dev.xantha.vss.config.VSSServerConfig;
+import dev.xantha.vss.api.column.ColumnFilters;
+import dev.xantha.vss.common.processing.ColumnCoverage;
 import dev.xantha.vss.common.processing.EncodedColumnData;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -64,7 +66,8 @@ public final class ColumnLodCache {
     }
 
     private void put(ResourceKey<Level> dimension, EncodedColumnData columnData, boolean preloaded) {
-        if (!config.enableColumnCache || columnData == null || columnData.encodedBytes() == null || !columnData.completeColumn()) {
+        if (!config.enableColumnCache || columnData == null || columnData.encodedBytes() == null || !columnData.isDeliverable()
+                || !columnData.coverage().filterKey().equals(ColumnFilters.snapshot().cacheKey())) {
             return;
         }
 
@@ -102,7 +105,7 @@ public final class ColumnLodCache {
                 columnData.sectionYs(),
                 columnData.sectionLengths(),
                 columnData.encodedCrc32c(),
-                effectivePreloaded));
+                effectivePreloaded, columnData.coverage()));
         this.cachedBytes += sizeBytes;
         if (effectivePreloaded) {
             preloadEntries++;
@@ -222,7 +225,10 @@ public final class ColumnLodCache {
             int[] sectionYs,
             int[] sectionLengths,
             int encodedCrc32c,
-            boolean preloaded) {
+            boolean preloaded,
+            ColumnCoverage coverage) {
+        public boolean isDeliverable() { return completeColumn || coverage.isFiltered(); }
+
         public Entry {
             sectionYs = sectionYs != null ? sectionYs.clone() : new int[0];
             sectionLengths = sectionLengths != null ? sectionLengths.clone() : new int[0];
@@ -252,7 +258,7 @@ public final class ColumnLodCache {
                     sectionYs,
                     sectionLengths,
                     encodedCrc32c,
-                    preloaded);
+                    preloaded, coverage);
         }
 
         public EncodedColumnData columnData() {
@@ -267,7 +273,7 @@ public final class ColumnLodCache {
                     completeColumn,
                     sectionYs,
                     sectionLengths,
-                    encodedCrc32c);
+                    encodedCrc32c, coverage);
         }
     }
 }

@@ -18,6 +18,8 @@ import dev.xantha.vss.networking.payloads.WorldgenProfileS2CPayload;
 import dev.xantha.vss.networking.payloads.WorldgenProfileFragmentS2CPayload;
 import dev.xantha.vss.networking.payloads.LostCityHintsC2SPayload;
 import dev.xantha.vss.networking.payloads.LostCityHintsS2CPayload;
+import dev.xantha.vss.networking.payloads.StructureTemplateRequestC2SPayload;
+import dev.xantha.vss.networking.payloads.StructureTemplateFragmentS2CPayload;
 import dev.xantha.vss.networking.server.VSSServerNetworking;
 import dev.xantha.vss.compat.BandwidthOptimizerCompat;
 import io.netty.channel.Channel;
@@ -56,6 +58,8 @@ public final class VSSNetworking {
         registrar.playToServer(RegionPresenceC2SPayload.TYPE, RegionPresenceC2SPayload.STREAM_CODEC, VSSServerNetworking::handleRegionPresence);
         registrar.playToServer(LostCityHintsC2SPayload.TYPE, LostCityHintsC2SPayload.STREAM_CODEC,
                 VSSServerNetworking::handleLostCityHints);
+        registrar.playToServer(StructureTemplateRequestC2SPayload.TYPE, StructureTemplateRequestC2SPayload.STREAM_CODEC,
+                VSSServerNetworking::handleStructureTemplateRequest);
 
         registrar.playToClient(SessionConfigS2CPayload.TYPE, SessionConfigS2CPayload.STREAM_CODEC, VSSNetworking::handleSessionConfig);
         registrar.playToClient(BatchResponseS2CPayload.TYPE, BatchResponseS2CPayload.STREAM_CODEC, VSSNetworking::handleBatchResponse);
@@ -68,6 +72,8 @@ public final class VSSNetworking {
                 VSSNetworking::handleWorldgenFragment);
         registrar.playToClient(LostCityHintsS2CPayload.TYPE, LostCityHintsS2CPayload.STREAM_CODEC,
                 VSSNetworking::handleLostCityHints);
+        registrar.playToClient(StructureTemplateFragmentS2CPayload.TYPE, StructureTemplateFragmentS2CPayload.STREAM_CODEC,
+                VSSNetworking::handleStructureTemplateFragment);
     }
 
     public static void registerConfigurationTasks(RegisterConfigurationTasksEvent event) {
@@ -155,6 +161,10 @@ public final class VSSNetworking {
         invokeClientHandler("handleLostCityHints", new Class<?>[] {LostCityHintsS2CPayload.class}, payload);
     }
 
+    private static void handleStructureTemplateFragment(StructureTemplateFragmentS2CPayload payload, IPayloadContext context) {
+        invokeClientHandler("handleStructureTemplateFragment", new Class<?>[] {StructureTemplateFragmentS2CPayload.class}, payload);
+    }
+
     private static void handleServerIdentity(ServerIdentityS2CPayload payload, IPayloadContext context) {
         invokeClientHandler("handleServerIdentity", new Class<?>[] {ServerIdentityS2CPayload.class}, payload);
     }
@@ -165,7 +175,7 @@ public final class VSSNetworking {
         }
         try {
             Class<?> handlersClass = Class.forName(CLIENT_PACKET_HANDLERS_CLASS);
-            Method method = handlersClass.getMethod(methodName, parameterTypes);
+            Method method = dev.xantha.vss.common.ReflectionAccess.method(handlersClass, methodName, parameterTypes);
             return method.invoke(null, args);
         } catch (InvocationTargetException e) {
             Throwable cause = e.getCause();

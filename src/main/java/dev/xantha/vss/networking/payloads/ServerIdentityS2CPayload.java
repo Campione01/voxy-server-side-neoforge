@@ -1,6 +1,7 @@
 package dev.xantha.vss.networking.payloads;
 
 import dev.xantha.vss.config.VSSServerConfig;
+import dev.xantha.vss.common.processing.ColumnCoverage;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
@@ -8,7 +9,13 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 public record ServerIdentityS2CPayload(
         String serverIdentity,
         boolean sharedWorld,
-        String nodeIdentity) implements CustomPacketPayload {
+        String nodeIdentity,
+        String columnFilterKey) implements CustomPacketPayload {
+    public ServerIdentityS2CPayload(String serverIdentity, boolean sharedWorld, String nodeIdentity) {
+        this(serverIdentity, sharedWorld, nodeIdentity, "");
+    }
+
+    public ServerIdentityS2CPayload { new ColumnCoverage(columnFilterKey); }
     private static final int MAX_SERVER_IDENTITY_LENGTH = 16;
     private static final int MAX_NODE_IDENTITY_LENGTH = 32;
 
@@ -17,8 +24,12 @@ public record ServerIdentityS2CPayload(
             StreamCodec.ofMember(ServerIdentityS2CPayload::encode, ServerIdentityS2CPayload::decode);
 
     public static ServerIdentityS2CPayload fromConfig() {
+        return fromConfig("");
+    }
+
+    public static ServerIdentityS2CPayload fromConfig(String filterKey) {
         VSSServerConfig config = VSSServerConfig.CONFIG;
-        return new ServerIdentityS2CPayload(config.serverIdentity, config.sharedWorld, config.nodeIdentity);
+        return new ServerIdentityS2CPayload(config.serverIdentity, config.sharedWorld, config.nodeIdentity, filterKey);
     }
 
     @Override
@@ -30,12 +41,13 @@ public record ServerIdentityS2CPayload(
         buf.writeUtf(payload.serverIdentity, MAX_SERVER_IDENTITY_LENGTH);
         buf.writeBoolean(payload.sharedWorld);
         buf.writeUtf(payload.nodeIdentity, MAX_NODE_IDENTITY_LENGTH);
+        buf.writeUtf(payload.columnFilterKey, 64);
     }
 
     public static ServerIdentityS2CPayload decode(FriendlyByteBuf buf) {
         return new ServerIdentityS2CPayload(
                 buf.readUtf(MAX_SERVER_IDENTITY_LENGTH),
                 buf.readBoolean(),
-                buf.readUtf(MAX_NODE_IDENTITY_LENGTH));
+                buf.readUtf(MAX_NODE_IDENTITY_LENGTH), buf.readUtf(64));
     }
 }

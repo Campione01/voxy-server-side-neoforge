@@ -15,7 +15,7 @@ public record ServerIdentityConfigurationTask(
 
     @Override
     public void run(Consumer<CustomPacketPayload> sender) {
-        sender.accept(ServerIdentityS2CPayload.fromConfig());
+        sender.accept(ServerIdentityS2CPayload.fromConfig(dev.xantha.vss.api.column.ColumnFilters.snapshot().cacheKey()));
         listener.finishCurrentTask(TYPE);
     }
 

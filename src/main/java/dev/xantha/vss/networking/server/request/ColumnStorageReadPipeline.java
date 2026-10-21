@@ -1,5 +1,7 @@
 package dev.xantha.vss.networking.server.request;
 
+import dev.xantha.vss.networking.server.runtime.ServerLifecycleGuard;
+import dev.xantha.vss.networking.server.sending.ColumnDeliveryService;
 
 import dev.xantha.vss.networking.server.diagnostics.ServerRequestStats;
 import dev.xantha.vss.networking.server.dirty.DirtyColumnBroadcaster;
@@ -11,7 +13,6 @@ import dev.xantha.vss.networking.server.storage.ColumnLodCache;
 import dev.xantha.vss.networking.server.storage.NbtSectionSerializer;
 import dev.xantha.vss.networking.server.storage.PersistentColumnLodStore;
 import dev.xantha.vss.networking.server.storage.PersistentColumnWriter;
-import dev.xantha.vss.networking.server.VSSServerNetworking;
 import dev.xantha.vss.common.VSSConstants;
 import dev.xantha.vss.common.VSSLogger;
 import dev.xantha.vss.common.DiagnosticCounters;
@@ -28,7 +29,15 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 
+/**
+ * 单列请求的缓存、持久化读取与生成回退管线。
+ * <p>注入的 registry/guard/delivery 来自同一运行时；异步完成后先复核 epoch、
+ * 玩家状态对象和请求有效性，再回到服务端线程交付，禁止自行通过静态门面重找依赖。
+ * 成功、失败、取消与拒绝均须结束所属读取许可；交付规则由 ColumnDeliveryService 统一处理。
+ */
 public final class ColumnStorageReadPipeline {
+    private final ServerLifecycleGuard lifecycle;
+    private final ColumnDeliveryService delivery;
     private final PlayerRequestRegistry playerRegistry;
     private final ChunkGenerationService generationService;
     private final ColumnLodCache columnCache;
@@ -46,7 +55,11 @@ public final class ColumnStorageReadPipeline {
             PersistentColumnLodStore persistentStore,
             PersistentColumnWriter persistentWriter,
             ServerRequestStats requestStats,
-            DiskTaskRuntime diskRuntime) {
+            DiskTaskRuntime diskRuntime,
+            ServerLifecycleGuard lifecycle,
+            ColumnDeliveryService delivery) {
+        this.lifecycle = java.util.Objects.requireNonNull(lifecycle, "lifecycle");
+        this.delivery = java.util.Objects.requireNonNull(delivery, "delivery");
         this.playerRegistry = playerRegistry;
         this.generationService = generationService;
         this.columnCache = columnCache;
@@ -90,7 +103,7 @@ public final class ColumnStorageReadPipeline {
             boolean allowGeneration,
             boolean cacheProbe,
             boolean priority) {
-        if (VSSServerNetworking.isServerStopping()) {
+        if (lifecycle.isStopping()) {
             state.clearRequest(requestId);
             return;
         }
@@ -101,7 +114,7 @@ public final class ColumnStorageReadPipeline {
         ServerLevel level = player.serverLevel();
         MinecraftServer server = player.server;
         DiskReadContext readContext = new DiskReadContext(
-                VSSServerNetworking.lifecycleEpoch(),
+                lifecycle.currentEpoch(),
                 playerId,
                 level,
                 state,
@@ -136,13 +149,13 @@ public final class ColumnStorageReadPipeline {
             DiskReadContext readContext,
             long dirtyTimestamp) {
         try {
-            if (VSSServerNetworking.isLifecycleStale(readContext.lifecycleEpoch())) {
+            if (lifecycle.isStale(readContext.lifecycleEpoch())) {
                 return null;
             }
             ColumnLodCache.Entry cached = columnCache.get(
                     readContext.level().dimension(), readContext.cx(), readContext.cz());
             if (cached != null
-                    && cached.completeColumn()
+                    && cached.isDeliverable()
                     && cached.timestamp() >= dirtyTimestamp) {
                 requestStats.recordPreloadReuse();
                 return new PersistentColumnLodStore.Entry(cached.columnData());
@@ -153,7 +166,7 @@ public final class ColumnStorageReadPipeline {
                     readContext.cx(),
                     readContext.cz(),
                     dirtyTimestamp > 0L ? dirtyTimestamp : 0L);
-            if (VSSServerNetworking.isLifecycleStale(readContext.lifecycleEpoch())) {
+            if (lifecycle.isStale(readContext.lifecycleEpoch())) {
                 return null;
             }
             return storedData;
@@ -176,7 +189,7 @@ public final class ColumnStorageReadPipeline {
         }
         ColumnLodCache.Entry cached = columnCache.get(
                 readContext.level().dimension(), readContext.cx(), readContext.cz());
-        if (cached != null && cached.completeColumn() && cached.timestamp() >= dirtyTimestamp) {
+        if (cached != null && cached.isDeliverable() && cached.timestamp() >= dirtyTimestamp) {
             scheduleDiskReadFinish(readContext, storedData, DiskNbtReadResult.cached(cached.columnData()));
             return;
         }
@@ -198,7 +211,7 @@ public final class ColumnStorageReadPipeline {
                 config.maxConcurrentNbtReads,
                 config.nbtReadQueueLimit,
                 config.diskReadQueueLimit,
-                () -> !VSSServerNetworking.isLifecycleStale(readContext.lifecycleEpoch())
+                () -> !lifecycle.isStale(readContext.lifecycleEpoch())
                         && readContext.requestState().isActiveRequest(readContext.requestId()),
                 completion -> startChunkNbtRead(readContext, completion),
                 result -> scheduleDiskReadFinish(readContext, storedData, result),
@@ -217,7 +230,7 @@ public final class ColumnStorageReadPipeline {
     private void startChunkNbtRead(
             DiskReadContext readContext,
             DiskTaskRuntime.AsyncReadCompletion<DiskNbtReadResult> completion) {
-        if (VSSServerNetworking.isLifecycleStale(readContext.lifecycleEpoch())
+        if (lifecycle.isStale(readContext.lifecycleEpoch())
                 || !completion.hasActiveListeners()) {
             completeNbtRead(completion, DiskNbtReadResult.empty());
             return;
@@ -232,14 +245,14 @@ public final class ColumnStorageReadPipeline {
                         if (error != null) {
                             completeNbtRead(
                                     completion,
-                                    VSSServerNetworking.isLifecycleStale(readContext.lifecycleEpoch())
+                                    lifecycle.isStale(readContext.lifecycleEpoch())
                                             ? DiskNbtReadResult.empty()
                                             : DiskNbtReadResult.failure());
                             return;
                         }
                         completion.execute(() -> {
                             try {
-                                if (VSSServerNetworking.isLifecycleStale(readContext.lifecycleEpoch())
+                                if (lifecycle.isStale(readContext.lifecycleEpoch())
                                         || !completion.hasActiveListeners()) {
                                     completeNbtRead(completion, DiskNbtReadResult.empty());
                                     return;
@@ -250,7 +263,7 @@ public final class ColumnStorageReadPipeline {
                                         readContext.cz(),
                                         optionalTag);
                                 EncodedColumnData encoded = rawDiskData != null
-                                                && rawDiskData.completeColumn()
+                                                && rawDiskData.isDeliverable()
                                                 && rawDiskData.sectionBytes() != null
                                                 && rawDiskData.sizeBytes() > 0
                                         ? EncodedColumnData.encode(rawDiskData, 0L)
@@ -336,7 +349,7 @@ public final class ColumnStorageReadPipeline {
             PersistentColumnLodStore.Entry storedData,
             EncodedColumnData diskData,
             boolean readFailed) {
-        if (VSSServerNetworking.isLifecycleStale(readContext.lifecycleEpoch())) {
+        if (lifecycle.isStale(readContext.lifecycleEpoch())) {
             return;
         }
         if (readFailed) {
@@ -357,7 +370,7 @@ public final class ColumnStorageReadPipeline {
             requestState.clearRequest(requestId);
             return;
         }
-        if (!VSSServerNetworking.isColumnStillRelevant(player, level.dimension(), cx, cz)) {
+        if (!delivery.isColumnStillRelevant(player, level.dimension(), cx, cz)) {
             requestState.clearRequest(requestId);
             return;
         }
@@ -365,7 +378,7 @@ public final class ColumnStorageReadPipeline {
         long effectiveColumnTimestamp = Math.max(columnTimestamp, latestDirtyTimestamp);
         if (storedData != null
                 && storedData.columnData() != null
-                && storedData.columnData().completeColumn()
+                && storedData.columnData().isDeliverable()
                 && storedData.timestamp() >= latestDirtyTimestamp) {
             sendStoredColumn(readContext, storedData, player, effectiveColumnTimestamp);
             return;
@@ -385,7 +398,7 @@ public final class ColumnStorageReadPipeline {
             handleMissingDiskColumn(readContext, player, effectiveColumnTimestamp);
             return;
         }
-        if (diskData == null || !diskData.hasBody() || !diskData.completeColumn()) {
+        if (diskData == null || !diskData.hasBody() || !diskData.isDeliverable()) {
             handleMissingDiskColumn(readContext, player, effectiveColumnTimestamp);
             return;
         }
@@ -401,7 +414,7 @@ public final class ColumnStorageReadPipeline {
         EncodedColumnData columnData = storedData.columnData().withColumnStamp(
                 Math.max(storedData.timestamp(), columnTimestamp));
         requestStats.recordDiskReadHit();
-        VSSServerNetworking.queueColumn(player, readContext.requestState(), new VoxelColumnS2CPayload(
+        delivery.queueColumn(player, readContext.requestState(), new VoxelColumnS2CPayload(
                 readContext.requestId(),
                 level.dimension(),
                 columnData), readContext.priority());
@@ -441,7 +454,7 @@ public final class ColumnStorageReadPipeline {
         ServerLevel level = readContext.level();
         requestStats.recordDiskReadHit();
         EncodedColumnData encodedDiskData = diskData.withColumnStamp(columnTimestamp);
-        VSSServerNetworking.queueColumn(player, readContext.requestState(), new VoxelColumnS2CPayload(
+        delivery.queueColumn(player, readContext.requestState(), new VoxelColumnS2CPayload(
                 readContext.requestId(),
                 level.dimension(),
                 encodedDiskData), readContext.priority());
@@ -458,7 +471,7 @@ public final class ColumnStorageReadPipeline {
             int cz,
             long minimumTimestamp,
             boolean priority) {
-        if (VSSServerNetworking.isServerStopping()) {
+        if (lifecycle.isStopping()) {
             state.clearRequest(requestId);
             return;
         }

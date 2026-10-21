@@ -58,4 +58,21 @@ class VssLodSampleCacheTest {
         assertSame(captured, result);
         assertSame(captured, cache.get(7));
     }
+
+    @Test void predictionOverflowPreservesAuthoritativeColumnsButCaptureOnlyCacheStaysBounded() {
+        var cache = new VssLodSampleCache(256);
+        var predicted = sampler().sampleSurface(0, 0);
+        var s = predicted;
+        var captured = new ClientColumnSample(s.surfaceY(), s.fluidY(), s.biomeIndex(), s.topBlockIndex(),
+                s.structureIndex(), s.treeKind(), s.treeDensity(), s.treeHeight(), s.fluid(),
+                s.flags() | ClientColumnSample.FLAG_CAPTURED, s.groundFeatureKind(), s.underBlockIndex(),
+                s.deepBlockIndex(), s.surfaceBottom(), s.lowerTop(), s.lowerBottom(), s.spanFloor());
+        cache.put(7, captured);
+        for (long key = 100; key < 8000; key++) cache.put(key, predicted);
+        assertSame(captured, cache.get(7), "prediction churn cannot discard the only captured copy");
+        assertTrue(cache.size() <= 256);
+        cache.clear();
+        for (long key = 0; key < 4096; key++) cache.put(key, captured);
+        assertTrue(cache.size() <= 256, "authoritative priority cannot bypass the cache limit");
+    }
 }

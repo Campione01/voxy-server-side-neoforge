@@ -73,6 +73,41 @@ class PredictionVisualQualityTest {
         assertNull(PredictionMorph.field(tile(0,0,3,32,64),null));
     }
 
+    @Test void waterPinsItsBanksWhileDryPartsOfTheSameTileStillMorph() {
+        var child = tile(0, 0, 3, 32, 64);
+        var parent = tile(0, 0, 4, 32, 72);
+        var dry = PredictionMorph.field(child, parent);
+        var wet = new ClientColumnSample(60, 64, 0, ClientColumnSample.NO_BLOCK, 0, 0, 0, 0, 1,
+                ClientColumnSample.FLAG_SURFACE_ONLY, 0, ClientColumnSample.NO_BLOCK, ClientColumnSample.NO_BLOCK,
+                ClientColumnSample.NO_SPAN, ClientColumnSample.NO_SPAN, ClientColumnSample.NO_SPAN, ClientColumnSample.NO_SPAN);
+        child.samples()[16 * 33 + 16] = wet;
+        float[] field = PredictionMorph.field(child, parent);
+        assertNotNull(field, "a small pond must not disable transitions across the entire tile");
+        for (int z = 15; z <= 17; z++) for (int x = 15; x <= 17; x++) assertEquals(0, field[z * 33 + x]);
+        assertEquals(dry[8 * 33 + 8], field[8 * 33 + 8]);
+        parent.samples()[4 * 33 + 4] = wet;
+        field = PredictionMorph.field(child, parent);
+        assertNotNull(field);
+        for (int z = 6; z < 10; z++) for (int x = 6; x < 10; x++) assertEquals(0, field[z * 33 + x]);
+        assertTrue(field[24 * 33 + 24] > 0, "dry terrain outside coarse water protection still animates");
+        Arrays.fill(child.samples(), wet);
+        assertNull(PredictionMorph.field(child, parent), "an entirely wet tile keeps the original fixed bank behavior");
+    }
+
+    @Test void coarseTreesPinTheirFootprintsWithoutDisablingUnrelatedTerrainTransitions() {
+        var child = tile(0, 0, 2, 32, 64);
+        var parent = tile(0, 0, 3, 32, 72);
+        var tree = new PredictionSimpleVegetation.Species(Blocks.OAK_LOG.defaultBlockState(), Blocks.OAK_LEAVES.defaultBlockState());
+        var forms = List.of(new PredictionSimpleVegetation.Form(8 * 32 + 8, 66, 66, 64, 8, tree, 0),
+                new PredictionSimpleVegetation.Form(16 * 32 + 16, 129, 129, 64, 1, null, 0));
+        float[] field = PredictionMorph.field(child, parent, new PredictionSimpleVegetation.Result(forms, null, 72));
+        assertNotNull(field);
+        for (int z = 7; z <= 9; z++) for (int x = 7; x <= 9; x++) assertEquals(0, field[z * 33 + x]);
+        for (int z = 16; z <= 17; z++) for (int x = 16; x <= 17; x++) assertEquals(0, field[z * 33 + x]);
+        assertEquals(8, field[24 * 33 + 24]);
+        assertEquals(66, forms.getFirst().x());assertEquals(64, forms.getFirst().y());
+    }
+
     @Test void cachedTreesKeepOriginalCoordinatesSpeciesAndBoundedSize() {
         Map<BlockPos,net.minecraft.world.level.block.state.BlockState> source=new HashMap<>();
         for(int x=0;x<16;x++) for(int z=0;z<16;z++) for(int y=64;y<90;y++)

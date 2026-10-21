@@ -16,6 +16,8 @@ public final class VSSClientBootstrap {
     }
 
     public static void init(IEventBus modBus, ModContainer modContainer) {
+        dev.xantha.vss.api.VSSApi.bindClientSession(
+                new dev.xantha.vss.networking.client.ClientLodSessionAdapter());
         VSSClientConfigScreens.register(modContainer);
         VSSSodiumOptionsEventBridge.register();
         VSSEmbeddiumOptionsEventBridge.register();

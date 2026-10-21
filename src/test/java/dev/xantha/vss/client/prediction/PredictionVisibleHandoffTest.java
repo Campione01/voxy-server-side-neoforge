@@ -47,7 +47,7 @@ class PredictionVisibleHandoffTest {
 
     @Test void voxyResetDoesNotInvalidatePredictionMeshOwnership() {
         var view = new PredictionRenderer.CoverageView(0, 0, 1400, null).ownership(false);
-        var cached = new PredictionRenderer.CachedCoverage(1, 2, 0, view, null);
+        var cached = new PredictionRenderer.CachedCoverage(1, 2, view, null);
         StrictLodVisibility.reset();
         assertTrue(cached.matchesOwnership(1, 2, view), "Voxy visibility belongs to this frame's depth, not the CPU tile mask");
         assertFalse(cached.matchesOwnership(2, 2, view), "a replaced prediction mesh still invalidates its own mask");
