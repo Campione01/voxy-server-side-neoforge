@@ -107,6 +107,12 @@ public class VSSServerConfig extends JsonConfig {
     public int distantSyncRateLimitPerTick = DEFAULT_DISTANT_SYNC_RATE_LIMIT_PER_TICK;
     public int generationConcurrencyLimitPerPlayer = 4;
     public int generationConcurrencyLimitGlobal = 32;
+    /** Optional automatic-work admission limits; explicit chunky jobs are exempt. */
+    public int generationSnapshotsPerTickLimit = 0;
+    public int generationSnapshotBudgetMillis = 0;
+    public int generationPauseAboveMspt = 0;
+    /** Outstanding chunky columns across the whole pipeline; zero means unlimited. */
+    public volatile int chunkyQueueLimit = 0;
     public int generationPackingThreads = 0;
     public int generationPackingQueueMaxMiB = 64;
     public int generationCompletionBudgetMillis = 4;
@@ -173,6 +179,10 @@ public class VSSServerConfig extends JsonConfig {
         help.put("distantSyncRateLimitPerTick", "129 区块外已有 LOD 请求数；默认 2；范围 0-" + MAX_SYNC_RATE_LIMIT_PER_TICK + "，0 表示关闭此档。");
         help.put("generationConcurrencyLimitPerPlayer", "每名玩家在途生成任务数，不是线程数；默认 4；范围 1-" + MAX_GENERATION_CONCURRENCY_LIMIT_PER_PLAYER + "。");
         help.put("generationConcurrencyLimitGlobal", "全服在途生成任务数，不是线程数，也是自动后台调度的上界；默认 32；范围 1-" + MAX_GENERATION_CONCURRENCY_LIMIT_GLOBAL + "。");
+        help.put("generationSnapshotsPerTickLimit", "每 tick 自动快照数量上限；默认 0 不额外限制。已加载区块与自动新生成区块共享预算并公平交接；/vss chunky 豁免。");
+        help.put("generationSnapshotBudgetMillis", "每 tick 自动快照软时间预算，单位毫秒；默认 0 关闭，不能中断单个快照。为可交接生成结果保留部分余量；/vss chunky 豁免。");
+        help.put("generationPauseAboveMspt", "平均 tick 耗时达到此毫秒数时暂停自动新增生成任务；默认 0 关闭。已生成结果继续交接；/vss chunky 豁免。");
+        help.put("chunkyQueueLimit", "/vss chunky 尚未完成的区块列队列上限；默认 0 不限制，正数限制扫描、生成、打包、保存或导入中的列数。队列满后暂缓领取新位置，完成或最终失败后自动补位；不是线程数或每秒速度，不影响普通自动生成。可用 /vss chunky limit <数量> 或 /vss 预生成 限速 <数量> 在线修改并保存，0 或不限恢复无限队列，无需重启。");
         help.put("generationPackingThreads", "LOD 打包线程数；0 表示自动且最多 4；范围 0-16。");
         help.put("generationPackingQueueMaxMiB", "等待打包的生成快照内存上限；默认 64 MiB；范围 8-512。");
         help.put("generationCompletionBudgetMillis", "每 tick 主线程处理生成完成回调的时间预算；默认 4ms；范围 1-20。");
@@ -256,6 +266,10 @@ public class VSSServerConfig extends JsonConfig {
         distantSyncRateLimitPerTick = clamp(distantSyncRateLimitPerTick, MIN_SYNC_RATE_LIMIT_PER_TICK, MAX_SYNC_RATE_LIMIT_PER_TICK);
         generationConcurrencyLimitPerPlayer = clamp(generationConcurrencyLimitPerPlayer, MIN_GENERATION_LIMIT, MAX_GENERATION_CONCURRENCY_LIMIT_PER_PLAYER);
         generationConcurrencyLimitGlobal = clamp(generationConcurrencyLimitGlobal, MIN_GENERATION_LIMIT, MAX_GENERATION_CONCURRENCY_LIMIT_GLOBAL);
+        generationSnapshotsPerTickLimit = clamp(generationSnapshotsPerTickLimit, 0, 128);
+        generationSnapshotBudgetMillis = clamp(generationSnapshotBudgetMillis, 0, 50);
+        generationPauseAboveMspt = clamp(generationPauseAboveMspt, 0, 1000);
+        chunkyQueueLimit = Math.max(0, chunkyQueueLimit);
         generationPackingThreads = clamp(generationPackingThreads, 0, 16);
         generationPackingQueueMaxMiB = clamp(generationPackingQueueMaxMiB, 8, 512);
         generationCompletionBudgetMillis = clamp(generationCompletionBudgetMillis, 1, 20);

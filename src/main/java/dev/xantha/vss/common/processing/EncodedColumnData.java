@@ -15,15 +15,27 @@ public record EncodedColumnData(
         boolean completeColumn,
         int[] sectionYs,
         int[] sectionLengths,
-        int encodedCrc32c) {
+        int encodedCrc32c,
+        ColumnCoverage coverage) {
     /** Bumped because older snapshots discarded the per-cell biome palette. */
     public static final int SCHEMA_VERSION = 5;
 
     public EncodedColumnData {
+        if (coverage == null) coverage = ColumnCoverage.FULL;
+        if (coverage.isFiltered() && completeColumn) throw new IllegalArgumentException("Filtered data is not a complete column");
         sectionYs = immutableSectionYs(sectionYs);
         sectionLengths = immutableSectionLengths(sectionYs, sectionLengths);
         validateSectionManifestOrder(sectionYs);
     }
+
+    public EncodedColumnData(int chunkX, int chunkZ, int compression, int rawSize, byte[] encodedBytes,
+            long columnStamp, int schemaVersion, boolean completeColumn,
+            int[] sectionYs, int[] sectionLengths, int encodedCrc32c) {
+        this(chunkX, chunkZ, compression, rawSize, encodedBytes, columnStamp, schemaVersion,
+                completeColumn, sectionYs, sectionLengths, encodedCrc32c, ColumnCoverage.FULL);
+    }
+
+    public boolean isDeliverable() { return completeColumn || coverage.isFiltered(); }
 
     public EncodedColumnData(
             int chunkX,
@@ -65,7 +77,8 @@ public record EncodedColumnData(
                 rawColumn.completeColumn(),
                 rawColumn.sectionYs(),
                 rawColumn.sectionLengths(),
-                crc32c(encoded.bytes()));
+                crc32c(encoded.bytes()),
+                rawColumn.coverage());
     }
 
     public static EncodedColumnData encodeZstd(LoadedColumnData rawColumn, long columnStamp) throws IOException {
@@ -87,7 +100,8 @@ public record EncodedColumnData(
                 completeColumn,
                 sectionYs,
                 sectionLengths,
-                encodedCrc32c);
+                encodedCrc32c,
+                coverage);
     }
 
     public int encodedSize() {

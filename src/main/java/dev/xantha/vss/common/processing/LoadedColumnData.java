@@ -9,13 +9,23 @@ public record LoadedColumnData(
         int sizeBytes,
         boolean completeColumn,
         int[] sectionYs,
-        int[] sectionLengths) {
+        int[] sectionLengths,
+        ColumnCoverage coverage) {
     public LoadedColumnData {
+        if (coverage == null) coverage = ColumnCoverage.FULL;
+        if (coverage.isFiltered() && completeColumn) throw new IllegalArgumentException("Filtered data is not a complete column");
         sectionYs = immutableSectionYs(sectionYs);
         sectionLengths = immutableSectionLengths(sectionYs, sectionLengths);
         sectionBytes = reorderSerializedSections(sectionBytes, sectionYs, sectionLengths);
         sortSectionManifest(sectionYs, sectionLengths);
     }
+
+    public LoadedColumnData(int chunkX, int chunkZ, byte[] sectionBytes, int sizeBytes,
+            boolean completeColumn, int[] sectionYs, int[] sectionLengths) {
+        this(chunkX, chunkZ, sectionBytes, sizeBytes, completeColumn, sectionYs, sectionLengths, ColumnCoverage.FULL);
+    }
+
+    public boolean isDeliverable() { return completeColumn || coverage.isFiltered(); }
 
     public LoadedColumnData(int chunkX, int chunkZ, byte[] sectionBytes, int sizeBytes, boolean completeColumn) {
         this(chunkX, chunkZ, sectionBytes, sizeBytes, completeColumn, new int[0], new int[0]);
