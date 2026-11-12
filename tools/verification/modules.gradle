@@ -32,6 +32,7 @@ tasks.register('moduleRegressionTest', Test) {
     include '**/StrictVoxyNodeIndexTest.class', '**/WorldgenProfileCacheTest.class', '**/CappedProcessorPredictionSeedTest.class'
     include '**/SurfaceBiomeZoomTest.class'
     include '**/LegacyRtfRuntimeTest.class', '**/NestedMultiNoisePresetsTest.class'
+    include '**/RtfTerraBlenderRegionsTest.class', '**/TerraBlenderRegionSourceTest.class'
     include '**/PredictionPlanningPipelineTest.class', '**/PredictionPlanningValidityTest.class'
     include '**/PredictionLoadingReadSetTest.class'
     include '**/PredictionCoarsePlanHandoffTest.class', '**/PredictionTeleportLoadingTest.class'
