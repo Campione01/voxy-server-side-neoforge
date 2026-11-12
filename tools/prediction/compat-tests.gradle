@@ -30,6 +30,9 @@ allprojects {
         if (providers.gradleProperty('vssTerraBlenderJar').isPresent()) {
             systemProperty 'vss.terraBlenderJar', providers.gradleProperty('vssTerraBlenderJar').get()
         }
+        if (providers.gradleProperty('vssTheBeyondJar').isPresent()) {
+            systemProperty 'vss.theBeyondJar', providers.gradleProperty('vssTheBeyondJar').get()
+        }
         if (providers.gradleProperty('vssRoadweaverJar').isPresent()) {
             systemProperty 'vss.roadweaverJar', providers.gradleProperty('vssRoadweaverJar').get()
         }
