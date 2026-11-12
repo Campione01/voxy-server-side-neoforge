@@ -66,6 +66,8 @@ final class WorldgenCodecSnapshot {
     static Encoded encodeRegistries(RegistryAccess access, net.minecraft.server.packs.resources.ResourceManager resources,
                                     DensityFunctionReferences references, WorldgenRegistryDependencies dependencies) {
         RegistryOps<JsonElement> ops = dependencies.ops();
+        // ReTerraForged's structure rules filter structure placement; a client predicting its structures needs them.
+        dependencies.requireIfPresent(ResourceLocation.parse("reterraforged:worldgen/structure_rule"));
         JsonObject root = new JsonObject();
         root.add("density_functions", WorldgenSectionCache.densities(access, dependencies, references, WorldgenCodecSnapshot::encodeDensities));
         for (var entry : references.definitions().entrySet()) {
@@ -402,8 +404,22 @@ final class WorldgenCodecSnapshot {
      * {"preset":"minecraft:overworld"} in the payload makes BiomeSource's
      * codec fail and silently selects VSS's deterministic fallback sampler.
      */
-    @SuppressWarnings({"rawtypes", "unchecked"})
     static JsonElement encodeBiomeSource(BiomeSource source, RegistryAccess access,
+                                         RegistryOps<JsonElement> ops) {
+        JsonElement encoded = encodeBiomeSourceTop(source, access, ops);
+        try {
+            return NestedMultiNoisePresets.normalize(encoded, access, ops);
+        } catch (RuntimeException | LinkageError failure) {
+            if (NESTED_PRESET_FAILURE.compareAndSet(false, true))
+                VSSLogger.error("VSS could not resolve a nested multi-noise preset; the biome source is sent as encoded", failure);
+            return encoded;
+        }
+    }
+
+    private static final java.util.concurrent.atomic.AtomicBoolean NESTED_PRESET_FAILURE = new java.util.concurrent.atomic.AtomicBoolean();
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static JsonElement encodeBiomeSourceTop(BiomeSource source, RegistryAccess access,
                                          RegistryOps<JsonElement> ops) {
         JsonObject encoded = BiomeSource.CODEC.encodeStart(ops, source)
                 .getOrThrow().getAsJsonObject();
