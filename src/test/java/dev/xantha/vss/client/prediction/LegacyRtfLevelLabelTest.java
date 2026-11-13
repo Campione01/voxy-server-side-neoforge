@@ -38,9 +38,12 @@ class LegacyRtfLevelLabelTest {
         try (var input = getClass().getClassLoader().getResourceAsStream("dev/xantha/vss/client/prediction/ClientWorldgenProfileDecoder.class")) {
             new ClassReader(input.readAllBytes()).accept(decoder, 0);
         }
-        MethodNode sampler = decoder.methods.stream()
+        List<MethodNode> builders = decoder.methods.stream()
                 .filter(m -> m.name.equals("decodeJavaSampler") && m.desc.startsWith("(L" + PROFILE + ";"))
-                .findFirst().orElseThrow();
+                .filter(LegacyRtfLevelLabelTest::callsCreate)
+                .toList();
+        assertEquals(1, builders.size(), "one decodeJavaSampler overload builds the state; the others delegate to it");
+        MethodNode sampler = builders.get(0);
         List<AbstractInsnNode> code = new ArrayList<>();
         for (AbstractInsnNode node : sampler.instructions) if (node.getOpcode() >= 0) code.add(node);
 
@@ -88,6 +91,12 @@ class LegacyRtfLevelLabelTest {
             assertCall(argument, COMPAT, "levelLabel");
         }
         assertEquals(1, calls);
+    }
+
+    private static boolean callsCreate(MethodNode method) {
+        for (AbstractInsnNode node : method.instructions)
+            if (node instanceof MethodInsnNode call && call.owner.equals(COMPAT) && call.name.equals("create")) return true;
+        return false;
     }
 
     private static boolean threadLocal(AbstractInsnNode node, String name) {

@@ -48,6 +48,12 @@ class WorldgenGeneratorDocumentTest {
         return new net.minecraft.world.level.levelgen.FlatLevelSource(settings);
     }
 
+    /** TerrainPredictionFixtures.noise() holds references the copied registries do not own, so it cannot be encoded. */
+    private static ChunkGenerator noise() {
+        var alias = new TerrainGeneratorSnapshotTest.NoiseAlias();
+        return new net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator(alias.getBiomeSource(), alias.generatorSettings());
+    }
+
     private static DimensionType type(ResourceKey<DimensionType> key) {
         return TerrainPredictionFixtures.access().registryOrThrow(Registries.DIMENSION_TYPE).getOrThrow(key);
     }
@@ -91,7 +97,7 @@ class WorldgenGeneratorDocumentTest {
     @Test
     void eachStageGivesTheBytesOfDecompressingAndParsingItsInput() throws Exception {
         for (boolean fast : new boolean[] {false, true}) {
-            for (var generator : List.of(flat(), TerrainPredictionFixtures.noise())) {
+            for (var generator : List.of(flat(), noise())) {
                 var budget = Budget.open(!fast);
                 try {
                     Encoded base = encode(generator);
