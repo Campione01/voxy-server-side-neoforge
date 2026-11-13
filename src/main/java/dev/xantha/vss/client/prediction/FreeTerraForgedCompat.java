@@ -9,7 +9,15 @@ import net.minecraft.world.level.levelgen.RandomState;
 
 /** Optional FreeTerraForged context bridge for tile and epoch releases. */
 final class FreeTerraForgedCompat {
+    /** The level whose RandomState create() is building, for the initializer's log line; set by the profile decoder. */
+    static final ThreadLocal<String> LEVEL = new ThreadLocal<>();
+
     private FreeTerraForgedCompat() { }
+
+    static String levelLabel() {
+        String level = LEVEL.get();
+        return level == null ? "unknown level" : level;
+    }
 
     static net.minecraft.world.level.levelgen.NoiseRouter predictionRouter(RandomState state) {
         if (!isState(state)) return state.router();
@@ -194,7 +202,7 @@ final class FreeTerraForgedCompat {
         void initialize(Object state, RegistryAccess registries) {
             if (legacyRtf) {
                 boolean bound = Boolean.TRUE.equals(overworld.get());
-                LegacyRtfRuntime.initialize(stateType, state, registries, bound, "minecraft:overworld");
+                LegacyRtfRuntime.initialize(stateType, state, registries, bound, levelLabel());
                 return;
             }
             try {

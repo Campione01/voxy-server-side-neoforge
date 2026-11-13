@@ -121,7 +121,7 @@ final class TerraBlenderRegionSnapshot {
             JsonObject section = new JsonObject();
             section.addProperty("region_size", regionSize);
             section.add("regions", regionArray);
-            int sectionBytes = WorldgenJson.bytes(section).length;
+            long sectionBytes = WorldgenJson.length(section);
             if (sectionBytes > MAX_SECTION_BYTES) {
                 VSSLogger.warn("VSS TerraBlender region snapshot too large: " + totalPoints
                         + " points, " + (sectionBytes / 1024 / 1024) + " MiB; "

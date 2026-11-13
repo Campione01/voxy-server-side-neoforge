@@ -32,9 +32,19 @@ public final class WorldgenProfileBuilder {
         for (ServerLevel level : server.getAllLevels()) {
             if (dimension != null && !dimension.equals(level.dimension())) continue;
             if (generators.size() >= WorldgenProfileS2CPayload.MAX_DIMENSIONS) break;
-            generators.put(level, WorldgenCodecSnapshot.withDimensionType(WorldgenCodecSnapshot.withRuntimeBiomeSource(WorldgenCodecSnapshot.encodeGenerator(
-                    level.getChunkSource().getGenerator(), server.registryAccess(), references, dependencies,
-                    TerraBlenderRegionSnapshot.regionTypeFor(level)), level.getChunkSource().getGenerator().getBiomeSource(), level.getSeed()), level.dimensionType()));
+            // Each generator is serialised and compressed once: headroom checks wait for the finished snapshot, and a
+            // snapshot that ends near the headroom is built again with every check exact (WorldgenCodecSnapshot.Budget).
+            for (boolean exact = WorldgenCodecSnapshot.Budget.exactOnly(); ; exact = true) {
+                var budget = WorldgenCodecSnapshot.Budget.open(exact);
+                try {
+                    generators.put(level, WorldgenCodecSnapshot.withDimensionType(WorldgenCodecSnapshot.withRuntimeBiomeSource(WorldgenCodecSnapshot.encodeGenerator(
+                            level.getChunkSource().getGenerator(), server.registryAccess(), references, dependencies,
+                            TerraBlenderRegionSnapshot.regionTypeFor(level)), level.getChunkSource().getGenerator().getBiomeSource(), level.getSeed()), level.dimensionType()));
+                    if (budget.settle(generators.get(level))) break;
+                } finally {
+                    budget.close();
+                }
+            }
         }
         Encoded registries = WorldgenCodecSnapshot.encodeRegistries(server.registryAccess(), server.getResourceManager(), references, dependencies);
         long registryFingerprint = fingerprintBytes(registries.bytes());
@@ -55,6 +65,7 @@ public final class WorldgenProfileBuilder {
             long fingerprint = fingerprint(dimensionSeed, level.dimension().location().toString(),
                     minY, height, generatorType, settings, registryFingerprint);
             Encoded generatorData = generators.get(level);
+            generatorData.publish();
             profiles.add(new DimensionProfile(
                     level.dimension().location(),
                     dimensionSeed,

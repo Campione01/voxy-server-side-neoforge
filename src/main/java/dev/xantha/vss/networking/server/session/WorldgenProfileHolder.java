@@ -51,6 +51,17 @@ public final class WorldgenProfileHolder {
         return built;
     }
 
+    /**
+     * Drops the payload built for one dimension and the all-levels payload that contains it. The other dimensions'
+     * payloads, the registry section cache and the template catalogs stay: unlike clear(), the next build of this
+     * dimension reuses them. True when something was dropped.
+     */
+    public static synchronized boolean invalidate(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension) {
+        if (dimension == null) return false;
+        boolean dropped = payloads.remove(dimension) != null;
+        return payloads.remove(null) != null || dropped;
+    }
+
     public static synchronized void clear() {
         WorldgenSectionCache.clear();
         owner = null;

@@ -338,9 +338,15 @@ final class ClientWorldgenProfileDecoder {
         }
         AutoCloseable owner = epochBased ? (AutoCloseable) generator : null;
         try {
-            RandomState randomState = FreeTerraForgedCompat.create(freeTerraForged && !epochBased,
-                    profile.levelKey().equals(Level.OVERWORLD), registries.access(),
-                    () -> RandomState.create(settings, registries.noiseLookup(), profile.seed()));
+            RandomState randomState;
+            FreeTerraForgedCompat.LEVEL.set(profile.levelKey().location().toString());
+            try {
+                randomState = FreeTerraForgedCompat.create(freeTerraForged && !epochBased,
+                        profile.levelKey().equals(Level.OVERWORLD), registries.access(),
+                        () -> RandomState.create(settings, registries.noiseLookup(), profile.seed()));
+            } finally {
+                FreeTerraForgedCompat.LEVEL.remove();
+            }
             if (epochBased) {
                 var type = net.minecraft.world.level.dimension.DimensionType.DIRECT_CODEC
                         .parse(registries.ops(), generatorRoot.get("vss_dimension_type")).getOrThrow();

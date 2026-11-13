@@ -105,7 +105,8 @@ final class WorldgenProfileCache {
         WorldgenProfileS2CPayload reference;
         WorldgenSectionCache.bypass(true);
         try {
-            reference = WorldgenProfileBuilder.build(server, revision, dimension);
+            // The reference also compresses each stage as before, so the comparison covers the deferred headroom checks.
+            reference = WorldgenCodecSnapshot.Budget.exactly(() -> WorldgenProfileBuilder.build(server, revision, dimension));
         } finally {
             WorldgenSectionCache.bypass(false);
         }

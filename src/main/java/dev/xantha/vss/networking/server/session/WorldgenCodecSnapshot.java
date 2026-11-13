@@ -251,18 +251,18 @@ final class WorldgenCodecSnapshot {
         plan = applyExtension(root, plan, extension);
         root.add(TerrainPredictionPlan.FIELD, plan.encode());
         if (generator.getClass() != NoiseBasedChunkGenerator.class) snapshotActualGenerator(root, generator, access, dependencies);
-        Encoded encoded = compress(root);
+        Encoded encoded = defer(root);
         if (unwrappedRegions && root.get("vss_terrablender") instanceof JsonObject regions
                 && regions.has(TerraBlenderRegionSource.SOURCE_MARKER) && exceedsHeadroom(encoded)) {
             // The unwrapped region section is the optional part: without it the snapshot is what it was before.
             root.remove("vss_terrablender");
             VSSLogger.warn("VSS TerraBlender region section from Lithostitched's injector root exceeds the generator snapshot budget; sent without it");
-            encoded = compress(root);
+            encoded = defer(root);
         }
         if (root.has("vss_generator") && exceedsHeadroom(encoded)) {
             root.remove("vss_generator");
             root.addProperty("vss_generator_error", "Optional generator codec exceeds snapshot budget");
-            encoded = compress(root);
+            encoded = defer(root);
         }
         // The generator payload has hard caps (see WorldgenProfileS2CPayload):
         // exceeding them throws while the profile is built, which would cost
@@ -271,9 +271,7 @@ final class WorldgenCodecSnapshot {
         // no longer fits with headroom, give up the optional section and keep
         // the core snapshot intact, but reject prediction: the wrapper codec
         // alone silently discards Blueprint and nested TerraBlender routing.
-        if (root.has("vss_blueprint")
-                && (encoded.bytes().length > GENERATOR_BYTES_HEADROOM
-                || encoded.rawSize() > GENERATOR_RAW_BYTES_HEADROOM)) {
+        if (root.has("vss_blueprint") && exceedsHeadroom(encoded)) {
             root.remove("vss_blueprint");
             root.addProperty("vss_unsupported_reason", "Blueprint biome slice snapshot exceeds payload budget");
             root.add(TerrainPredictionPlan.FIELD, TerrainPredictionPlan.unavailable(
@@ -281,7 +279,7 @@ final class WorldgenCodecSnapshot {
             VSSLogger.warn("VSS dropped the Blueprint slice snapshot to stay inside the generator"
                     + " payload budget (" + encoded.bytes().length + " B compressed, "
                     + encoded.rawSize() + " B raw); prediction unavailable for this dimension");
-            encoded = compress(root);
+            encoded = defer(root);
         }
         return exceedsHeadroom(encoded) ? unavailableSnapshot("Terrain projection exceeds snapshot budget") : encoded;
     }
@@ -326,11 +324,11 @@ final class WorldgenCodecSnapshot {
         root.add(TerrainPredictionPlan.FIELD, plan.encode());
         if (plan.kind() == TerrainPredictionPlan.Kind.UNAVAILABLE) root.addProperty("vss_unsupported_reason", plan.reason());
         snapshotActualGenerator(root, generator, access, dependencies);
-        var encoded = compress(root);
+        var encoded = defer(root);
         if (root.has("vss_generator") && exceedsHeadroom(encoded)) {
             root.remove("vss_generator");
             root.addProperty("vss_generator_error", "Optional generator codec exceeds snapshot budget");
-            encoded = compress(root);
+            encoded = defer(root);
         }
         return exceedsHeadroom(encoded) ? unavailableSnapshot("Terrain projection exceeds snapshot budget") : encoded;
     }
@@ -356,6 +354,7 @@ final class WorldgenCodecSnapshot {
         }
     }
     private static boolean exceedsHeadroom(Encoded encoded) {
+        if (Budget.assume(encoded)) return false;
         return encoded.bytes().length > GENERATOR_BYTES_HEADROOM || encoded.rawSize() > GENERATOR_RAW_BYTES_HEADROOM;
     }
     private static Encoded unavailableSnapshot(String reason) {
@@ -600,15 +599,12 @@ final class WorldgenCodecSnapshot {
 
     /** Optional JSON metadata keeps the wire format compatible with older clients. */
     static Encoded withDimensionType(Encoded generator, net.minecraft.world.level.dimension.DimensionType type) {
-        if (generator.bytes().length == 0) return generator;
+        if (generator.isEmpty()) return generator;
         try {
-            byte[] raw = LodByteCompression.decompress(generator.bytes(), generator.compression(), generator.rawSize(),
-                    dev.xantha.vss.networking.payloads.WorldgenProfileS2CPayload.MAX_GENERATOR_RAW_BYTES);
-            JsonObject root = com.google.gson.JsonParser.parseString(new String(raw,
-                    java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+            JsonObject root = document(generator);
             root.add("vss_dimension_type", net.minecraft.world.level.dimension.DimensionType.DIRECT_CODEC
                     .encodeStart(JsonOps.INSTANCE, type).getOrThrow());
-            Encoded encoded = compress(root);
+            Encoded encoded = defer(root);
             return exceedsHeadroom(encoded) ? unavailableSnapshot("Dimension type metadata exceeds snapshot budget") : encoded;
         } catch (java.io.IOException failure) {
             throw new IllegalStateException("Cannot append prediction dimension type", failure);
@@ -617,12 +613,9 @@ final class WorldgenCodecSnapshot {
 
     /** Capture hidden server biome routing after the ordinary codec snapshot, before publication. */
     static Encoded withRuntimeBiomeSource(Encoded generator, BiomeSource source, long seed) {
-        if (generator.bytes().length == 0) return generator;
+        if (generator.isEmpty()) return generator;
         try {
-            byte[] raw = LodByteCompression.decompress(generator.bytes(), generator.compression(), generator.rawSize(),
-                    dev.xantha.vss.networking.payloads.WorldgenProfileS2CPayload.MAX_GENERATOR_RAW_BYTES);
-            JsonObject root = com.google.gson.JsonParser.parseString(new String(raw,
-                    java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+            JsonObject root = document(generator);
             TerrainPredictionPlan plan = TerrainPredictionPlan.read(root);
             if (plan.kind() != TerrainPredictionPlan.Kind.NOISE_GRAPH || !plan.backend().equals("vss:noise_graph")) return generator;
             try {
@@ -636,16 +629,170 @@ final class WorldgenCodecSnapshot {
                 root.add(TerrainPredictionPlan.FIELD, TerrainPredictionPlan.unavailable(reason).encode());
                 VSSLogger.warn(reason);
             }
-            Encoded encoded = compress(root);
+            Encoded encoded = defer(root);
             return exceedsHeadroom(encoded) ? unavailableSnapshot("TerraBlender End routing exceeds snapshot budget") : encoded;
         } catch (java.io.IOException failure) {
             throw new IllegalStateException("Cannot append server biome routing", failure);
         }
     }
 
-    record Encoded(int compression, int rawSize, byte[] bytes) {
+    /**
+     * A generator snapshot. Built from bytes it is what the record was. Built by {@link WorldgenCodecSnapshot#defer} it
+     * keeps its document and serialises and compresses it the first time anything reads its bytes, so stages that extend
+     * a snapshot work on a copy of its document instead of decompressing and parsing it, and a build compresses each
+     * generator once.
+     */
+    static final class Encoded {
+        private JsonObject document;
+        private boolean materialized;
+        private int compression;
+        private int rawSize;
+        private byte[] bytes;
+
+        Encoded(int compression, int rawSize, byte[] bytes) {
+            this.compression = compression;
+            this.rawSize = rawSize;
+            this.bytes = bytes;
+            this.materialized = true;
+        }
+
+        private Encoded(JsonObject document) {
+            this.document = document;
+        }
+
         static Encoded empty() {
             return new Encoded(LodByteCompression.METHOD_NONE, 0, new byte[0]);
+        }
+
+        int compression() {
+            materialize();
+            return compression;
+        }
+
+        int rawSize() {
+            materialize();
+            return rawSize;
+        }
+
+        byte[] bytes() {
+            materialize();
+            return bytes;
+        }
+
+        /** As bytes().length == 0, without compressing: a document always serialises to at least "{}". */
+        synchronized boolean isEmpty() {
+            return document == null && bytes.length == 0;
+        }
+
+        private synchronized JsonObject retained() {
+            return document;
+        }
+
+        /** The snapshot leaves the build: its bytes are fixed and its document is no longer kept. */
+        synchronized void publish() {
+            materialize();
+            document = null;
+        }
+
+        private synchronized void materialize() {
+            if (materialized) return;
+            byte[] raw = dev.xantha.vss.common.worldgen.WorldgenJson.bytes(document);
+            LodByteCompression.Result result = LodByteCompression.compressForNetwork(raw, false);
+            compression = result.method();
+            rawSize = result.originalLength();
+            bytes = result.bytes();
+            materialized = true;
+        }
+    }
+
+    /** A snapshot of root's current members; root may change afterwards, the members themselves may not. */
+    static Encoded defer(JsonObject root) {
+        return new Encoded(copy(root));
+    }
+
+    /**
+     * A stage's own root for a snapshot: a new object over the snapshot's members, or its parsed bytes when it has no
+     * document. Stages add, replace or remove members of the root; they never change a member's value in place.
+     */
+    static JsonObject document(Encoded generator) throws java.io.IOException {
+        JsonObject retained = generator.retained();
+        if (retained != null) return copy(retained);
+        byte[] raw = LodByteCompression.decompress(generator.bytes(), generator.compression(), generator.rawSize(),
+                dev.xantha.vss.networking.payloads.WorldgenProfileS2CPayload.MAX_GENERATOR_RAW_BYTES);
+        return com.google.gson.JsonParser.parseString(new String(raw, java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+    }
+
+    private static JsonObject copy(JsonObject root) {
+        JsonObject copy = new JsonObject();
+        for (var member : root.entrySet()) copy.add(member.getKey(), member.getValue());
+        return copy;
+    }
+
+    /**
+     * The headroom checks of one generator build (see WorldgenProfileBuilder). Running fast, a check on a deferred
+     * snapshot is assumed to pass and the snapshot is not compressed for it. The build then keeps its result only when
+     * the finished snapshot contains every member of each assumed one and stays clear of the headroom by a margin;
+     * otherwise it runs again with every check exact, as each stage compressed its snapshot before.
+     */
+    static final class Budget {
+        static final int RAW_MARGIN = 512 * 1024;
+        static final int ENCODED_MARGIN = 512 * 1024;
+        private static final boolean EXACT_ONLY = Boolean.getBoolean("vss.worldgenProfile.exactBudget");
+        private static final ThreadLocal<Budget> CURRENT = new ThreadLocal<>();
+        private static final ThreadLocal<Boolean> FORCE_EXACT = new ThreadLocal<>();
+        private final boolean exact;
+        private final Budget previous;
+        private final java.util.List<java.util.Set<String>> assumed = new java.util.ArrayList<>();
+
+        private Budget(boolean exact, Budget previous) {
+            this.exact = exact;
+            this.previous = previous;
+        }
+
+        /** True when builds on this thread run every check exact from the start. */
+        static boolean exactOnly() {
+            return EXACT_ONLY || Boolean.TRUE.equals(FORCE_EXACT.get());
+        }
+
+        /** Runs action with every build on this thread exact, for the cache's uncached reference build. */
+        static <T> T exactly(java.util.function.Supplier<T> action) {
+            Boolean before = FORCE_EXACT.get();
+            FORCE_EXACT.set(Boolean.TRUE);
+            try { return action.get(); }
+            finally {
+                if (before == null) FORCE_EXACT.remove();
+                else FORCE_EXACT.set(before);
+            }
+        }
+
+        static Budget open(boolean exact) {
+            Budget budget = new Budget(exact, CURRENT.get());
+            CURRENT.set(budget);
+            return budget;
+        }
+
+        void close() {
+            if (previous == null) CURRENT.remove();
+            else CURRENT.set(previous);
+        }
+
+        /** Whether the finished snapshot of this build can be published as built (always, when every check ran exact). */
+        boolean settle(Encoded generator) {
+            if (exact || assumed.isEmpty()) return true;
+            JsonObject finished = generator == null ? null : generator.retained();
+            if (finished == null) return false;
+            for (var members : assumed) if (!finished.keySet().containsAll(members)) return false;
+            return generator.rawSize() <= GENERATOR_RAW_BYTES_HEADROOM - RAW_MARGIN
+                    && generator.bytes().length <= GENERATOR_BYTES_HEADROOM - ENCODED_MARGIN;
+        }
+
+        private static boolean assume(Encoded encoded) {
+            Budget budget = CURRENT.get();
+            if (budget == null || budget.exact) return false;
+            JsonObject document = encoded.retained();
+            if (document == null) return false;
+            budget.assumed.add(java.util.Set.copyOf(document.keySet()));
+            return true;
         }
     }
 }

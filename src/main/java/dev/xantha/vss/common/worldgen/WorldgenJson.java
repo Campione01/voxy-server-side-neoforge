@@ -20,6 +20,48 @@ public final class WorldgenJson {
         return text.toString().getBytes(StandardCharsets.UTF_8);
     }
 
+    /** bytes(value).length, counted without building the string or its byte array. */
+    public static long length(JsonElement value) {
+        var counter = new Utf8Counter();
+        try (var writer = new JsonWriter(counter)) {
+            writer.setSerializeNulls(true);
+            write(writer, value);
+        } catch (IOException impossible) { throw new UncheckedIOException(impossible); }
+        return counter.finish();
+    }
+
+    /**
+     * UTF-8 length as String.getBytes(UTF_8) gives it: a surrogate pair is four bytes, a lone surrogate becomes one '?'.
+     * A pair may arrive split over two writes, so a high surrogate waits for the next char.
+     */
+    private static final class Utf8Counter extends Writer {
+        private long bytes;
+        private boolean pendingHigh;
+
+        @Override public void write(int c) { count((char) c); }
+        @Override public void write(char[] buffer, int offset, int length) { for (int i = 0; i < length; i++) count(buffer[offset + i]); }
+        @Override public void write(String text, int offset, int length) { for (int i = 0; i < length; i++) count(text.charAt(offset + i)); }
+        @Override public void flush() { }
+        @Override public void close() { }
+
+        private void count(char c) {
+            if (pendingHigh) {
+                pendingHigh = false;
+                if (Character.isLowSurrogate(c)) { bytes += 4; return; }
+                bytes += 1;
+            }
+            if (Character.isHighSurrogate(c)) pendingHigh = true;
+            else if (Character.isLowSurrogate(c) || c < 0x80) bytes += 1;
+            else if (c < 0x800) bytes += 2;
+            else bytes += 3;
+        }
+
+        long finish() {
+            if (pendingHigh) { pendingHigh = false; bytes += 1; }
+            return bytes;
+        }
+    }
+
     /** Hash the same canonical bytes without retaining another full snapshot string. */
     public static String sha256(JsonElement value) {
         try {
